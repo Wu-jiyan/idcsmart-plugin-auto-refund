@@ -3,7 +3,7 @@ namespace addons\auto_refund;
 
 class AutoRefundPlugin extends \app\admin\lib\Plugin
 {
-    public $info = ["name" => "AutoRefund", "title" => "产品退款", "description" => "产品退款管理插件，支持自动退款，人工审核退款，支持按时长退款，按月退款，全额退款，支持自定义退款时间，支持插件间对接", "status" => 1, "author" => "二五云,星空云", "version" => "1.3.0", "module" => "addons", "lang" => ["chinese" => "产品退款", "chinese_tw" => "產品退款", "english" => "Product Refund"]];
+    public $info = ["name" => "AutoRefund", "title" => "产品退款", "description" => "产品退款管理插件，支持自动退款，人工审核退款，支持按时长退款，按月退款，全额退款，支持自定义退款时间，支持插件间对接", "status" => 1, "author" => "<a href=\"https://github.com/Wu-jiyan/idcsmart-plugin-auto-refund\">二五云,星空云</a>", "version" => "1.3.0", "module" => "addons", "lang" => ["chinese" => "产品退款", "chinese_tw" => "產品退款", "english" => "Product Refund"]];
     
     public function install()
     {

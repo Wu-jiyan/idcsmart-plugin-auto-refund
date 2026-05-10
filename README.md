@@ -1,6 +1,6 @@
 # AutoRefund 产品退款插件
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL-3.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.0-green.svg)](https://github.com/W-jiyan/idcsmart-plugin-auto-refund)
 [![PHP](https://img.shields.io/badge/php-7.2%2B-8892BF.svg)](https://php.net)
 
@@ -126,7 +126,7 @@ auto_refund/
 
 ## 📄 开源协议
 
-本项目采用 [MIT](LICENSE) 开源协议。
+本项目采用 [GPL-3.0 license](LICENSE) 开源协议。
 
 ## 💬 联系我们
 

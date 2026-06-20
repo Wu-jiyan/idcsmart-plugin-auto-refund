@@ -161,17 +161,22 @@ class AdminIndexController extends \app\admin\controller\PluginAdminBaseControll
     }
     public function index()
     {
-        $products = \Think\Db::name("products")->alias("p")->field("p.id, p.gid, p.name, p.server_group, g.name as group_name")->join("product_groups g", "p.gid = g.id", "LEFT")->order("p.gid ASC")->order("p.id ASC")->select();
+        $products = \Think\Db::name("products")->alias("p")
+            ->field("p.id, p.gid, p.name, p.server_group, p.hidden as product_hidden, g.name as group_name, g.hidden as group_hidden")
+            ->join("product_groups g", "p.gid = g.id", "LEFT")
+            ->order("p.gid ASC")
+            ->order("p.id ASC")
+            ->select();
         $filteredProducts = [];
         foreach ($products as $key => $product) {
             $fanProducts = \Think\Db::name("product_refund")->where("productid", $product["id"])->find();
-            $name = \Think\Db::name("products")->where("id", $product["id"])->find();
             $name1 = \Think\Db::name("products")->where(["id" => $product["id"], "api_type" => "zjmf_api"])->find();
             $zjmf_finance_api = \Think\Db::name("zjmf_finance_api")->where(["id" => $name1["server_group"]])->find();
             if (!$fanProducts) {
                 $product["api_name"] = $zjmf_finance_api["name"];
                 $product["api_id"] = $name1["server_group"];
-                $product["hidden"] = $name["hidden"];
+                $product["hidden"] = $product["product_hidden"];
+                $product["group_hidden"] = $product["group_hidden"];
                 $filteredProducts[] = $product;
             }
         }

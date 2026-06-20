@@ -259,5 +259,163 @@ class AutoRefundPlugin extends \app\admin\lib\Plugin
             }
             echo "产品退款(插件)清理已下架产品：" . $count . "个:" . date("Y-m-d H:i:s") . PHP_EOL . "";
         }
+
+        $pendingList = \Think\Db::name("product_refund_list")
+            ->where("type", "4")
+            ->where("status", "1")
+            ->select();
+
+        $syncedCount = 0;
+        foreach ($pendingList as $record) {
+            $refundConfig = \Think\Db::name("product_refund")
+                ->where("productid", $record["productid"])
+                ->find();
+            if (!$refundConfig || empty($refundConfig["api_config_id"])) continue;
+
+            $apiConfig = \Think\Db::name("product_refund_api_config")
+                ->where("id", $refundConfig["api_config_id"])
+                ->where("type", "plugin")
+                ->find();
+            if (!$apiConfig) continue;
+
+            preg_match('/\[上游产品ID:(\d+)\]/', $record["reasonrefund"], $matches);
+            $upstreamProductId = $matches[1] ?? '';
+            if (empty($upstreamProductId)) continue;
+
+            $upstreamStatus = $this->queryUpstreamRefundStatus($apiConfig, $upstreamProductId);
+            if ($upstreamStatus === null) continue;
+
+            if ($upstreamStatus == '2') {
+                if ($this->executeUpstreamRefund($record)) {
+                    $syncedCount++;
+                    echo "产品退款(插件)上游审核通过-自动退款：HostID=" . $record["hostid"] . "，金额=" . $record["amount"] . ":" . date("Y-m-d H:i:s") . PHP_EOL;
+                }
+            } elseif ($upstreamStatus == '3') {
+                \Think\Db::name("product_refund_list")->where("id", $record["id"])->update([
+                    "status" => "3",
+                    "reason" => "上游审核已拒绝",
+                    "audittime" => time(),
+                    "reviewed" => "System(Upstream)"
+                ]);
+                $syncedCount++;
+                echo "产品退款(插件)上游已拒绝：HostID=" . $record["hostid"] . ":" . date("Y-m-d H:i:s") . PHP_EOL;
+            }
+        }
+
+        if ($syncedCount > 0) {
+            echo "产品退款(插件)同步上游插件退款状态：" . $syncedCount . "条:" . date("Y-m-d H:i:s") . PHP_EOL;
+        }
+    }
+
+    private function queryUpstreamRefundStatus($apiConfig, $upstreamProductId)
+    {
+        $libPath = dirname(__FILE__) . "/lib/EncryptUtil.php";
+        if (file_exists($libPath)) {
+            require_once $libPath;
+            $encryptClass = 'addons\auto_refund\lib\EncryptUtil';
+            if (class_exists($encryptClass)) {
+                $apiKey = $encryptClass::decrypt($apiConfig["api_key"]);
+            } else {
+                $apiKey = base64_decode($apiConfig["api_key"]);
+            }
+        } else {
+            $apiKey = base64_decode($apiConfig["api_key"]);
+        }
+
+        if (empty($apiKey)) return null;
+
+        $hostname = rtrim($apiConfig["hostname"], '/');
+        $url = $hostname . '/plugins/addons/auto_refund/api.php?' . http_build_query([
+            'api_key' => $apiKey,
+            'host_id' => $upstreamProductId
+        ]);
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($httpCode != 200) return null;
+
+        $result = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) return null;
+
+        if (isset($result['code']) && $result['code'] == 200) {
+            return $result['data']['status'] ?? null;
+        }
+        return null;
+    }
+
+    private function executeUpstreamRefund($refundRecord)
+    {
+        try {
+            $userId       = $refundRecord["user_id"];
+            $hostId       = $refundRecord["hostid"];
+            $refundAmount = floatval($refundRecord["amount"]);
+            $invoiceId    = $refundRecord["invoices"];
+
+            $clients = \Think\Db::name("clients")->where("id", $userId)->find();
+            $host    = \Think\Db::name("host")->where("id", $hostId)->find();
+            if (!$clients || !$host) return false;
+
+            $newCredit  = $clients["credit"] + $refundAmount;
+            $updatetime = time();
+
+            \Think\Db::name("accounts")->insert([
+                "uid" => $userId, "currency" => "CNY",
+                "gateway" => "退款至余额【主机ID：" . $hostId . " 】",
+                "create_time" => time(), "pay_time" => time(),
+                "description" => "【上游审核通过-插件间对接自动退款】订单号：" . $refundRecord["orderid"] . "，主机ID：" . $hostId,
+                "amount_out" => $refundAmount, "rate" => "1.00000",
+                "invoice_id" => $invoiceId
+            ]);
+
+            \Think\Db::name("credit")->insert([
+                "uid" => $userId, "create_time" => time(),
+                "description" => "Credit from Refund of Invoice ID " . $invoiceId,
+                "amount" => $refundAmount,
+                "notes" => "订单号：" . $refundRecord["orderid"] . "，主机ID：" . $hostId . "，【上游审核通过-插件间对接自动退款】【退款金额：" . $refundAmount . " 元】",
+                "balance" => $newCredit
+            ]);
+
+            \Think\Db::name("clients")->where("id", $userId)->update(["credit" => $newCredit]);
+            \Think\Db::name("invoices")->where("id", $invoiceId)->update(["status" => "Refunded"]);
+            \Think\Db::name("host")->where("id", $hostId)->update(["nextduedate" => $updatetime]);
+
+            \Think\Db::name("activity_log")->insert([
+                "create_time" => time(),
+                "description" => "账单退款 - User ID:" . $userId . " - Invoice ID:" . $invoiceId . " - 退款金额: " . $refundAmount . " 元，来源：上游审核通过-插件间对接自动退款",
+                "user" => "System", "uid" => $userId, "ipaddr" => "0.0.0.0",
+                "type" => "6", "activeid" => 0, "usertype" => "System", "port" => "",
+                "type_data_id" => $invoiceId
+            ]);
+            \Think\Db::name("activity_log")->insert([
+                "create_time" => time(),
+                "description" => "【上游审核通过-插件间对接自动退款】User ID:" . $userId . "，Host ID:" . $hostId . "，原到期：" . date("Y-m-d H:i:s", $host["nextduedate"]) . "，更新到期：" . date("Y-m-d H:i:s", $updatetime),
+                "user" => "System", "uid" => $userId, "ipaddr" => "0.0.0.0",
+                "type" => "6", "activeid" => 0, "usertype" => "System", "port" => "",
+                "type_data_id" => ""
+            ]);
+
+            $originalNotes = $host["notes"] ?? "";
+            \Think\Db::name("host")->where("id", $hostId)->update([
+                "notes" => $originalNotes . "\n【上游审核通过-插件间对接自动退款】\n原到期：" . date("Y-m-d H:i:s", $host["nextduedate"]) . "\n更新到期：" . date("Y-m-d H:i:s", $updatetime)
+            ]);
+
+            \Think\Db::name("product_refund_list")->where("id", $refundRecord["id"])->update([
+                "status"   => "2",
+                "reason"   => "上游审核通过-自动退款",
+                "audittime" => time(),
+                "reviewed"  => "System(Upstream)"
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 }

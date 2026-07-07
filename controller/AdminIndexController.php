@@ -760,326 +760,86 @@ class AdminIndexController extends \app\admin\controller\PluginAdminBaseControll
         $data = $this->request->post();
         $id = isset($data["id"]) ? $data["id"] : NULL;
         $refundlist = \Think\Db::name("product_refund_list")->where("id", $id)->find();
+        if (!$refundlist) {
+            return json(["code" => 400, "msg" => "退款申请不存在"]);
+        }
         $clients = \Think\Db::name("clients")->where("id", $refundlist["user_id"])->find();
         $productsid = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
         $admin_id = cmf_get_current_admin_id();
         $adminuser = \Think\Db::name("user")->where("id", $admin_id)->value("user_nickname");
         $request = $refundlist["request"];
         $rules = $refundlist["rules"];
-        $days = $product["within"] / 24;
         $currentTimestamp = time();
         $client_ip = $_SERVER["REMOTE_ADDR"];
         $client_port = $_SERVER["REMOTE_PORT"];
-        if ($request == 1) {
-            if ($rules == 1) {
-                $refundamount = $refundlist["amount"];
-                $newcredit = $clients["credit"] + $refundamount;
-                $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                $usagetime = $currentTimestamp - $productsid["regdate"];
-                $hours = floor($usagetime / 3600);
-                $minutes = floor($usagetime % 3600 / 60);
-                $seconds = $usagetime % 60;
-                $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核产品首次按时长退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                \Think\Db::name("accounts")->insert($dataaccounts);
-                $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核产品首次按时长退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                \Think\Db::name("credit")->insert($datacredit);
-                \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                $datainvoices = ["status" => "Refunded"];
-                \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核产品首次按时长退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                \Think\Db::name("activity_log")->insert($dataactivity_log);
-                $updatetime = time();
-                \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核产品首次按时长退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                \Think\Db::name("activity_log")->insert($dataupdatetime);
-                $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                $newNotes = "人工按时长退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                $originalNotes = $originalData["notes"] ?? "";
-                $updatedNotes = $originalNotes . "\n" . $newNotes;
-                $datahost = ["notes" => $updatedNotes];
-                \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                $response = ["code" => 200, "msg" => "【审核通过】，按天退款。"];
-            } else {
-                if ($rules == 2) {
-                    $refundamount = $refundlist["amount"];
-                    $newcredit = $clients["credit"] + $refundamount;
-                    $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                    $usagetime = $currentTimestamp - $productsid["regdate"];
-                    $hours = floor($usagetime / 3600);
-                    $minutes = floor($usagetime % 3600 / 60);
-                    $seconds = $usagetime % 60;
-                    $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                    $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核产品首次按月退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                    \Think\Db::name("accounts")->insert($dataaccounts);
-                    $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核产品首次按月退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                    \Think\Db::name("credit")->insert($datacredit);
-                    \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                    $datainvoices = ["status" => "Refunded"];
-                    \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                    $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核产品首次按月退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                    \Think\Db::name("activity_log")->insert($dataactivity_log);
-                    $updatetime = time();
-                    \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                    $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核产品首次按月退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                    \Think\Db::name("activity_log")->insert($dataupdatetime);
-                    $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                    \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                    $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                    $newNotes = "人工按时月退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                    $originalNotes = $originalData["notes"] ?? "";
-                    $updatedNotes = $originalNotes . "\n" . $newNotes;
-                    $datahost = ["notes" => $updatedNotes];
-                    \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                    $response = ["code" => 200, "msg" => "【审核通过】，按月退款。"];
-                } else {
-                    if ($rules == 3) {
-                        $refundamount = $refundlist["amount"];
-                        $newcredit = $clients["credit"] + $refundamount;
-                        $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                        $usagetime = $currentTimestamp - $productsid["regdate"];
-                        $hours = floor($usagetime / 3600);
-                        $minutes = floor($usagetime % 3600 / 60);
-                        $seconds = $usagetime % 60;
-                        $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                        $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核产品首次按全额退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                        \Think\Db::name("accounts")->insert($dataaccounts);
-                        $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核产品首次按全额退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                        \Think\Db::name("credit")->insert($datacredit);
-                        \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                        $datainvoices = ["status" => "Refunded"];
-                        \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                        $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核产品首次按全额退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                        \Think\Db::name("activity_log")->insert($dataactivity_log);
-                        $updatetime = time();
-                        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                        $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核产品首次按全额退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                        \Think\Db::name("activity_log")->insert($dataupdatetime);
-                        $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                        \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                        $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                        $newNotes = "人工按全额退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                        $originalNotes = $originalData["notes"] ?? "";
-                        $updatedNotes = $originalNotes . "\n" . $newNotes;
-                        $datahost = ["notes" => $updatedNotes];
-                        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                        $response = ["code" => 200, "msg" => "【审核通过】，全额退款。"];
-                    } else {
-                        $response = ["code" => 400, "msg" => "不支持的退款规则。"];
-                    }
-                }
-            }
-        } else {
-            if ($request == 2) {
-                if ($rules == 1) {
-                    $refundamount = $refundlist["amount"];
-                    $newcredit = $clients["credit"] + $refundamount;
-                    $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                    $usagetime = $currentTimestamp - $productsid["regdate"];
-                    $hours = floor($usagetime / 3600);
-                    $minutes = floor($usagetime % 3600 / 60);
-                    $seconds = $usagetime % 60;
-                    $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                    $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核同类产品首次按时长退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                    \Think\Db::name("accounts")->insert($dataaccounts);
-                    $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核同类产品首次按时长退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                    \Think\Db::name("credit")->insert($datacredit);
-                    \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                    $datainvoices = ["status" => "Refunded"];
-                    \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                    $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核同类产品首次按时长退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                    \Think\Db::name("activity_log")->insert($dataactivity_log);
-                    $updatetime = time();
-                    \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                    $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核同类产品首次按时长退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                    \Think\Db::name("activity_log")->insert($dataupdatetime);
-                    $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                    \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                    $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                    $newNotes = "人工按时长退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                    $originalNotes = $originalData["notes"] ?? "";
-                    $updatedNotes = $originalNotes . "\n" . $newNotes;
-                    $datahost = ["notes" => $updatedNotes];
-                    \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                    $response = ["code" => 200, "msg" => "【审核通过】，按天退款。"];
-                } else {
-                    if ($rules == 2) {
-                        $refundamount = $refundlist["amount"];
-                        $newcredit = $clients["credit"] + $refundamount;
-                        $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                        $usagetime = $currentTimestamp - $productsid["regdate"];
-                        $hours = floor($usagetime / 3600);
-                        $minutes = floor($usagetime % 3600 / 60);
-                        $seconds = $usagetime % 60;
-                        $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                        $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核同类产品首次按全月退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                        \Think\Db::name("accounts")->insert($dataaccounts);
-                        $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核同类产品首次按全月退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                        \Think\Db::name("credit")->insert($datacredit);
-                        \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                        $datainvoices = ["status" => "Refunded"];
-                        \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                        $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核同类产品首次按全月退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                        \Think\Db::name("activity_log")->insert($dataactivity_log);
-                        $updatetime = time();
-                        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                        $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核同类产品首次按全月退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                        \Think\Db::name("activity_log")->insert($dataupdatetime);
-                        $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                        \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                        $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                        $newNotes = "人工按月退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                        $originalNotes = $originalData["notes"] ?? "";
-                        $updatedNotes = $originalNotes . "\n" . $newNotes;
-                        $datahost = ["notes" => $updatedNotes];
-                        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                        $response = ["code" => 200, "msg" => "【审核通过】，按月退款。"];
-                    } else {
-                        if ($rules == 3) {
-                            $refundamount = $refundlist["amount"];
-                            $newcredit = $clients["credit"] + $refundamount;
-                            $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                            $usagetime = $currentTimestamp - $productsid["regdate"];
-                            $hours = floor($usagetime / 3600);
-                            $minutes = floor($usagetime % 3600 / 60);
-                            $seconds = $usagetime % 60;
-                            $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                            $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核同类产品首次按全额退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                            \Think\Db::name("accounts")->insert($dataaccounts);
-                            $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核同类产品首次按全额退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                            \Think\Db::name("credit")->insert($datacredit);
-                            \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                            $datainvoices = ["status" => "Refunded"];
-                            \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                            $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核同类产品首次按全额退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                            \Think\Db::name("activity_log")->insert($dataactivity_log);
-                            $updatetime = time();
-                            \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                            $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核同类产品首次按全额退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                            \Think\Db::name("activity_log")->insert($dataupdatetime);
-                            $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                            \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                            $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                            $newNotes = "人工按全额退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                            $originalNotes = $originalData["notes"] ?? "";
-                            $updatedNotes = $originalNotes . "\n" . $newNotes;
-                            $datahost = ["notes" => $updatedNotes];
-                            \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                            $response = ["code" => 200, "msg" => "【审核通过】，全额退款。"];
-                        } else {
-                            $response = ["code" => 400, "msg" => "不支持的退款规则。"];
-                        }
-                    }
-                }
-            } else {
-                if ($request == 3) {
-                    if ($rules == 1) {
-                        $refundamount = $refundlist["amount"];
-                        $newcredit = $clients["credit"] + $refundamount;
-                        $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                        $usagetime = $currentTimestamp - $productsid["regdate"];
-                        $hours = floor($usagetime / 3600);
-                        $minutes = floor($usagetime % 3600 / 60);
-                        $seconds = $usagetime % 60;
-                        $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                        $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】，退款金额" . $refundamount . "元， 使用时长：" . $timeFormat , "create_time" => time(), "pay_time" => time(), "description" => "【人工审核X小时内按时长退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                        \Think\Db::name("accounts")->insert($dataaccounts);
-                        $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核X小时内按时长退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                        \Think\Db::name("credit")->insert($datacredit);
-                        \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                        $datainvoices = ["status" => "Refunded"];
-                        \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                        $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核X小时内按时长退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                        \Think\Db::name("activity_log")->insert($dataactivity_log);
-                        $updatetime = time();
-                        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                        $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核X小时内按时长退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                        \Think\Db::name("activity_log")->insert($dataupdatetime);
-                        $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                        \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                        $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                        $newNotes = "人工按时长退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                        $originalNotes = $originalData["notes"] ?? "";
-                        $updatedNotes = $originalNotes . "\n" . $newNotes;
-                        $datahost = ["notes" => $updatedNotes];
-                        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                        $response = ["code" => 200, "msg" => "【审核通过】，按天退款。"];
-                    } else {
-                        if ($rules == 2) {
-                            $refundamount = $refundlist["amount"];
-                            $newcredit = $clients["credit"] + $refundamount;
-                            $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                            $usagetime = $currentTimestamp - $productsid["regdate"];
-                            $hours = floor($usagetime / 3600);
-                            $minutes = floor($usagetime % 3600 / 60);
-                            $seconds = $usagetime % 60;
-                            $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                            $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核X小时内按月退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                            \Think\Db::name("accounts")->insert($dataaccounts);
-                            $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核X小时内按月退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                            \Think\Db::name("credit")->insert($datacredit);
-                            \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                            $datainvoices = ["status" => "Refunded"];
-                            \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                            $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核X小时内按月退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                            \Think\Db::name("activity_log")->insert($dataactivity_log);
-                            $updatetime = time();
-                            \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                            $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核X小时内按月退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                            \Think\Db::name("activity_log")->insert($dataupdatetime);
-                            $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                            \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                            $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                            $newNotes = "人工按月退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                            $originalNotes = $originalData["notes"] ?? "";
-                            $updatedNotes = $originalNotes . "\n" . $newNotes;
-                            $datahost = ["notes" => $updatedNotes];
-                            \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                            $response = ["code" => 200, "msg" => "【审核通过】，按月退款。"];
-                        } else {
-                            if ($rules == 3) {
-                                $refundamount = $refundlist["amount"];
-                                $newcredit = $clients["credit"] + $refundamount;
-                                $productstime = $productsid["nextduedate"] - $productsid["regdate"];
-                                $usagetime = $currentTimestamp - $productsid["regdate"];
-                                $hours = floor($usagetime / 3600);
-                                $minutes = floor($usagetime % 3600 / 60);
-                                $seconds = $usagetime % 60;
-                                $timeFormat = sprintf("%02d:%02d:%02d", $hours, $minutes, $seconds);
-                                $dataaccounts = ["uid" => $refundlist["user_id"], "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $refundlist["hostid"] . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【人工审核X小时内按全额退款】订单号：" . $refundlist["orderid"] . ", 主机ID：" . $refundlist["hostid"] . ", 开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $refundlist["invoices"]];
-                                \Think\Db::name("accounts")->insert($dataaccounts);
-                                $datacredit = ["uid" => $refundlist["user_id"], "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $refundlist["invoices"], "amount" => $refundamount, "notes" => "订单号：" . $refundlist["orderid"] . "，主机ID：" . $refundlist["hostid"] . "，账单号：" . $refundlist["invoices"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，人工审核X小时内按全额退款【退款金额：" . $refundamount . " 元】，开通时间：" . date("Y-m-d H:i:s", $productsid["regdate"]) . ", 到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " 使用时长：" . $timeFormat . " ", "balance" => $newcredit];
-                                \Think\Db::name("credit")->insert($datacredit);
-                                \Think\Db::name("clients")->where("id", $refundlist["user_id"])->update(["credit" => $newcredit]);
-                                $datainvoices = ["status" => "Refunded"];
-                                \Think\Db::name("invoices")->where("id", $refundlist["invoices"])->update($datainvoices);
-                                $dataactivity_log = ["create_time" => time(), "description" => "账单退款 - User ID:" . $refundlist["user_id"] . " - Invoice ID:" . $refundlist["invoices"] . " - 首付金额：" . $productsid["firstpaymentamount"] . "元，退款金额: " . $refundamount . " 交易明细处，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，来源：人工审核X小时内按全额退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => $refundlist["invoices"]];
-                                \Think\Db::name("activity_log")->insert($dataactivity_log);
-                                $updatetime = time();
-                                \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
-                                $dataupdatetime = ["create_time" => time(), "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 <a href=\"#/customer-view/abstract?id=" . $refundlist["user_id"] . "\">User ID:" . $refundlist["user_id"] . "</a>，订单号：" . $refundlist["orderid"] . " ，<a href=\"#/customer-view/product-innerpage?hid={" . $refundlist["hostid"] . "}&id=" . $refundlist["user_id"] . "\">Host ID:" . $refundlist["hostid"] . "</a>，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核X小时内按全额退款", "user" => $adminuser, "uid" => $refundlist["user_id"], "ipaddr" => $client_ip, "type" => "6", "activeid" => $admin_id, "usertype" => "Admin", "port" => $client_port, "type_data_id" => ""];
-                                \Think\Db::name("activity_log")->insert($dataupdatetime);
-                                $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过"];
-                                \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
-                                $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
-                                $newNotes = "人工按全额退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime);
-                                $originalNotes = $originalData["notes"] ?? "";
-                                $updatedNotes = $originalNotes . "\n" . $newNotes;
-                                $datahost = ["notes" => $updatedNotes];
-                                \Think\Db::name("host")->where("id", $refundlist["hostid"])->update($datahost);
-                                $response = ["code" => 200, "msg" => "【审核通过】，全额退款。"];
-                            } else {
-                                $response = ["code" => 400, "msg" => "不支持的退款规则。"];
-                            }
-                        }
-                    }
-                } else {
-                    $response = ["code" => 400, "msg" => "不支持的请求类型。"];
-                }
-            }
+        $refundamount = floatval($refundlist["amount"]);
+        $invoiceId = intval($refundlist["invoices"]);
+
+        $refundTypeLabel = "";
+        if ($request == 1) $refundTypeLabel = "产品首次";
+        elseif ($request == 2) $refundTypeLabel = "同类产品首次";
+        elseif ($request == 3) $refundTypeLabel = "指定时间内";
+        else $refundTypeLabel = "退款";
+
+        if ($rules == 1) $refundTypeLabel .= "按时长";
+        elseif ($rules == 2) $refundTypeLabel .= "按月";
+        elseif ($rules == 3) $refundTypeLabel .= "全额";
+
+        // 使用 RefundService 按系统逻辑校验并执行退款
+        require_once __DIR__ . "/../lib/RefundService.php";
+        $refundService = new \addons\auto_refund\lib\RefundService();
+        
+        // 先校验可退金额
+        $refundInfo = $refundService->getRefundable($invoiceId);
+        if (!$refundInfo['success']) {
+            return json(["code" => 400, "msg" => $refundInfo['msg']]);
         }
+        
+        if ($refundamount > $refundInfo['can_refund']) {
+            return json([
+                "code" => 400, 
+                "msg" => "退款金额({$refundamount}元)超过系统可退金额({$refundInfo['can_refund']}元)，请检查账单是否已支付或已被退款。"
+            ]);
+        }
+
+        // 执行退款
+        $result = $refundService->refund($invoiceId, $refundamount, $refundlist["hostid"], $adminuser, $admin_id);
+        if (!$result['success']) {
+            return json(["code" => 400, "msg" => $result['msg']]);
+        }
+
+        // 更新主机到期时间
+        $updatetime = time();
+        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["nextduedate" => $updatetime]);
+
+        // 记录审核日志
+        $dataupdatetime = [
+            "create_time" => time(),
+            "description" => "【管理 " . $adminuser . " (" . $admin_id . " )审核通过】用户申请退款 User ID:" . $refundlist["user_id"] . "，订单号：" . $refundlist["orderid"] . " ，Host ID:" . $refundlist["hostid"] . "，原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . " ，更新到期时间：" . date("Y-m-d H:i:s", $updatetime) . "  ，来源：人工审核" . $refundTypeLabel . "退款（实际退款：" . $result['refunded_amount'] . "元）",
+            "user" => $adminuser,
+            "uid" => $refundlist["user_id"],
+            "ipaddr" => $client_ip,
+            "type" => "6",
+            "activeid" => $admin_id,
+            "usertype" => "Admin",
+            "port" => $client_port,
+            "type_data_id" => ""
+        ];
+        \Think\Db::name("activity_log")->insert($dataupdatetime);
+
+        // 更新退款申请状态
+        $dbConfig = ["audittime" => time(), "adminid" => $admin_id, "reviewed" => $adminuser, "status" => "2", "reason" => "审核通过（系统可退：" . $result['refunded_amount'] . "元）"];
+        \Think\Db::name("product_refund_list")->where("id", $refundlist["id"])->update($dbConfig);
+
+        // 更新主机备注
+        $originalData = \Think\Db::name("host")->where("id", $refundlist["hostid"])->find();
+        $newNotes = "人工" . $refundTypeLabel . "退款\n原到期时间：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n" . "更新后到期时间：" . date("Y-m-d H:i:s", $updatetime) . "\n退款金额：" . $result['refunded_amount'] . "元";
+        $originalNotes = $originalData["notes"] ?? "";
+        $updatedNotes = $originalNotes . "\n" . $newNotes;
+        \Think\Db::name("host")->where("id", $refundlist["hostid"])->update(["notes" => $updatedNotes]);
+
+        $response = ["code" => 200, "msg" => $result['msg']];
+
         return json($response);
     }
     public function refuse()

@@ -5,10 +5,17 @@
  * 下游调用地址：https://上游域名/plugins/addons/auto_refund/api.php
  */
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    exit(json_encode(['code' => 405, 'msg' => 'Method Not Allowed']));
+}
+
 header('Content-Type: application/json; charset=utf-8');
 
+// ── 读取数据库配置 ────────────────────────────────────────────────
+// 文件位于 /public/plugins/addons/auto_refund/ 目录，需要向上回溯到网站根目录查找配置
 $configPaths = [
-    __DIR__ . '/../../../../app/config/database.php',
+    __DIR__ . '/../../../../app/config/database.php',   // 标准结构：public/plugins/addons/auto_refund/ 回溯到根目录
     __DIR__ . '/../../../../config/database.php',
     __DIR__ . '/../../../../application/database.php',
 ];
@@ -32,6 +39,7 @@ $dbUser   = $dbConfig['username'] ?? $dbConfig['user']   ?? 'root';
 $dbPass   = $dbConfig['password'] ?? $dbConfig['pass']   ?? '';
 $dbPrefix = $dbConfig['prefix']   ?? 'shd_';
 
+// ── 连接数据库 ────────────────────────────────────────────────────
 try {
     $pdo = new PDO(
         "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4",
@@ -43,50 +51,7 @@ try {
     exit(json_encode(['code' => 500, 'msg' => '数据库连接失败: ' . $e->getMessage()]));
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $queryApiKey = trim($_GET['api_key'] ?? '');
-    $queryHostId = intval($_GET['host_id'] ?? 0);
-
-    if (empty($queryApiKey) || $queryHostId <= 0) {
-        exit(json_encode(['code' => 400, 'msg' => '缺少必要参数（api_key、host_id）']));
-    }
-
-    $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}product_refund_plugin_api` WHERE api_key = ? AND status = 1 LIMIT 1");
-    $stmt->execute([$queryApiKey]);
-    $apiCfg = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$apiCfg) {
-        exit(json_encode(['code' => 401, 'msg' => 'API KEY 无效或已被禁用']));
-    }
-
-    $stmt = $pdo->prepare("SELECT id, status, reason, amount, audittime, reviewed, created_time FROM `{$dbPrefix}product_refund_list` WHERE hostid = ? AND type = '4' ORDER BY id DESC LIMIT 1");
-    $stmt->execute([$queryHostId]);
-    $refundRecord = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$refundRecord) {
-        exit(json_encode(['code' => 404, 'msg' => '未找到该主机的退款申请记录']));
-    }
-
-    $statusMap = ['1' => '待审核', '2' => '已通过', '3' => '已拒绝', '4' => '已取消'];
-    exit(json_encode([
-        'code' => 200,
-        'data' => [
-            'id'         => $refundRecord['id'],
-            'status'     => $refundRecord['status'],
-            'status_text'=> $statusMap[$refundRecord['status']] ?? '未知',
-            'amount'     => $refundRecord['amount'],
-            'reason'     => $refundRecord['reason'],
-            'reviewed'   => $refundRecord['reviewed'],
-            'audittime'  => $refundRecord['audittime'],
-            'created_time' => $refundRecord['created_time'],
-        ]
-    ]));
-}
-
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    exit(json_encode(['code' => 405, 'msg' => 'Method Not Allowed']));
-}
-
+// ── 接收参数 ──────────────────────────────────────────────────────
 $apiKey            = trim($_POST['api_key']             ?? '');
 $userId            = trim($_POST['user_id']             ?? '');
 $username          = trim($_POST['username']            ?? '');
@@ -96,6 +61,7 @@ $reason            = trim($_POST['reason']              ?? '');
 $productName       = trim($_POST['product_name']        ?? '');
 $timestamp         = intval($_POST['timestamp']         ?? 0);
 
+// ── 参数校验 ──────────────────────────────────────────────────────
 if (empty($apiKey) || empty($userId) || empty($upstreamProductId)) {
     exit(json_encode(['code' => 400, 'msg' => '缺少必要参数（api_key、user_id、upstream_product_id）']));
 }
@@ -108,6 +74,7 @@ if ($amount <= 0) {
     exit(json_encode(['code' => 400, 'msg' => '退款金额必须大于0']));
 }
 
+// ── 验证 API KEY ──────────────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}product_refund_plugin_api` WHERE api_key = ? AND status = 1 LIMIT 1");
 $stmt->execute([$apiKey]);
 $apiConfig = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -116,11 +83,13 @@ if (!$apiConfig) {
     exit(json_encode(['code' => 401, 'msg' => 'API KEY 无效或已被禁用']));
 }
 
+// ── 获取上游（本地）用户信息 ────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT username FROM `{$dbPrefix}clients` WHERE id = ? LIMIT 1");
 $stmt->execute([$apiConfig['user_id']]);
 $localUser = $stmt->fetch(PDO::FETCH_ASSOC);
 $localUsername = $localUser ? $localUser['username'] : ('用户ID:' . $apiConfig['user_id']);
 
+// ── 查找本地产品（通过 dcimid 或 upstream_id）────────────────────
 $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}host` WHERE id = ? LIMIT 1");
 $stmt->execute([$upstreamProductId]);
 $hostInfo = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -132,6 +101,7 @@ if (!$hostInfo) {
 $localHostId    = $hostInfo['id'];
 $localProductId = $hostInfo['productid'];
 
+// ── 查找订单 ──────────────────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}orders` WHERE id = ? LIMIT 1");
 $stmt->execute([$hostInfo['orderid']]);
 $orderInfo = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -142,17 +112,33 @@ if (!$orderInfo) {
 
 $invoiceId = $orderInfo['invoiceid'];
 
+// ── 校验账单支付状态（修复漏洞：未支付不能创建退款申请）────────────────
+$stmt = $pdo->prepare("SELECT status FROM `{$dbPrefix}invoices` WHERE id = ? LIMIT 1");
+$stmt->execute([$invoiceId]);
+$invoiceInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$invoiceInfo) {
+    exit(json_encode(['code' => 404, 'msg' => '未找到对应账单记录（invoiceid=' . $invoiceId . '）']));
+}
+
+if ($invoiceInfo['status'] !== 'Paid') {
+    exit(json_encode(['code' => 400, 'msg' => '账单未支付，不可退款（状态：' . $invoiceInfo['status'] . '）']));
+}
+
+// ── 查产品名称 ────────────────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}products` WHERE id = ? LIMIT 1");
 $stmt->execute([$localProductId]);
 $productInfo      = $stmt->fetch(PDO::FETCH_ASSOC);
 $localProductName = $productInfo ? $productInfo['name'] : ($productName ?: '未知产品');
 
+// ── 防重复申请 ────────────────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT id FROM `{$dbPrefix}product_refund_list` WHERE hostid = ? AND status IN (1,2) LIMIT 1");
 $stmt->execute([$localHostId]);
 if ($stmt->fetch()) {
     exit(json_encode(['code' => 400, 'msg' => '该产品已有进行中的退款申请（hostid=' . $localHostId . '）']));
 }
 
+// ── 检查上游产品的退款配置 ─────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}product_refund` WHERE productid = ? LIMIT 1");
 $stmt->execute([$localProductId]);
 $refundConfig = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -160,45 +146,49 @@ $refundConfig = $stmt->fetch(PDO::FETCH_ASSOC);
 $upstreamRefundResult = null;
 $upstreamApiConfig = null;
 
+// 如果上游也是API工单(type=3)或插件间对接(type=4)类型，自动调用上游退款
 if ($refundConfig && ($refundConfig['type'] == '3' || $refundConfig['type'] == '4') && !empty($refundConfig['api_config_id'])) {
+    // 获取上游API配置
     $stmt = $pdo->prepare("SELECT * FROM `{$dbPrefix}product_refund_api_config` WHERE id = ? LIMIT 1");
     $stmt->execute([$refundConfig['api_config_id']]);
     $upstreamApiConfig = $stmt->fetch(PDO::FETCH_ASSOC);
     
     if ($upstreamApiConfig) {
+        // 获取上游产品的dcimid/upstream_id
         $upstreamProductIdForApi = $hostInfo['dcimid'] ?: ($hostInfo['upstream_id'] ?? '');
         
         if (!empty($upstreamProductIdForApi)) {
+            // 解密API密钥
             $apiKeyDecrypted = '';
             if (!empty($upstreamApiConfig['api_key'])) {
                 $encryptedKey = $upstreamApiConfig['api_key'];
+                
+                // 尝试使用自定义解密函数解密
                 $apiKeyDecrypted = decryptApiKey($encryptedKey, $dbPass);
+                
+                // 如果解密失败，直接使用原值
                 if (empty($apiKeyDecrypted)) {
                     $apiKeyDecrypted = $encryptedKey;
                 }
             }
             
+            // 根据上游类型调用不同的接口
             if ($upstreamApiConfig['type'] == 'api') {
+                // API工单退款 - 登录并提交工单
                 $upstreamRefundResult = callUpstreamApiRefund($upstreamApiConfig, $apiKeyDecrypted, $upstreamProductIdForApi, $amount, $reason);
             } else {
+                // 插件间对接 - 调用上游的api.php
                 $upstreamRefundResult = callUpstreamPluginRefund($upstreamApiConfig, $apiKeyDecrypted, $upstreamProductIdForApi, $amount, $reason, $localUsername);
             }
         }
     }
 }
 
+// ── 写入退款记录（全部为待审核状态，实际退款由管理员通过后台审核执行）──
 $reasonFull = $reason . ' [下游用户ID:' . $userId . '，下游用户名:' . $username . '，上游产品ID:' . $upstreamProductId . ']';
 
-$initialStatus = '1';
-$reviewedBy = '';
-$auditTime = 0;
-
+// 所有退款申请统一设置为待审核（status=1），审核通过后由 agreewith() 调用 RefundService 按系统逻辑退款
 if ($upstreamRefundResult && $upstreamRefundResult['success']) {
-    if (isset($upstreamApiConfig['api_audit_type']) && $upstreamApiConfig['api_audit_type'] == 2) {
-        $initialStatus = '2';
-        $reviewedBy = 'System(UpstreamAuto)';
-        $auditTime = time();
-    }
     $reasonFull .= ' [上游调用:' . $upstreamRefundResult['msg'] . ']';
 } elseif ($upstreamRefundResult) {
     $reasonFull .= ' [上游调用失败:' . $upstreamRefundResult['msg'] . ']';
@@ -207,9 +197,9 @@ if ($upstreamRefundResult && $upstreamRefundResult['success']) {
 $stmt = $pdo->prepare("
     INSERT INTO `{$dbPrefix}product_refund_list`
         (user_id, username, productid, productname, orderid, producttype,
-         hostid, invoices, type, request, rules, amount, created_time, reasonrefund, status, reviewed, audittime)
+         hostid, invoices, type, request, rules, amount, created_time, reasonrefund, status)
     VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, '4', '3', '1', ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, '4', '3', '1', ?, ?, ?, '1')
 ");
 $stmt->execute([
     $apiConfig['user_id'],
@@ -223,11 +213,9 @@ $stmt->execute([
     $amount,
     time(),
     $reasonFull,
-    $initialStatus,
-    $reviewedBy,
-    $auditTime,
 ]);
 
+// ── 写操作日志 ────────────────────────────────────────────────────
 $logDesc = '【插件间对接】收到下游退款申请 - 下游用户：' . $username . '（ID:' . $userId . '）'
     . '，上游用户：' . $localUsername . '（ID:' . $apiConfig['user_id'] . '）'
     . '，上游产品ID:' . $upstreamProductId
@@ -242,77 +230,18 @@ $stmt = $pdo->prepare("
 ");
 $stmt->execute([time(), $logDesc, $apiConfig['user_id'], $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0']);
 
-if ($initialStatus == '2') {
-    $localUserId = $apiConfig['user_id'];
-
-    $stmt = $pdo->prepare("SELECT credit FROM `{$dbPrefix}clients` WHERE id = ? LIMIT 1");
-    $stmt->execute([$localUserId]);
-    $clientRow = $stmt->fetch(PDO::FETCH_ASSOC);
-    $oldCredit = floatval($clientRow['credit'] ?? 0);
-    $newCredit = $oldCredit + $amount;
-
-    $stmt = $pdo->prepare("UPDATE `{$dbPrefix}clients` SET credit = ? WHERE id = ?");
-    $stmt->execute([$newCredit, $localUserId]);
-
-    $stmt = $pdo->prepare("
-        INSERT INTO `{$dbPrefix}accounts`
-            (uid, currency, gateway, create_time, pay_time, description, amount_out, rate, invoice_id)
-        VALUES (?, 'CNY', ?, ?, ?, ?, ?, '1.00000', ?)
-    ");
-    $stmt->execute([
-        $localUserId,
-        '退款至余额【主机ID：' . $localHostId . ' 】',
-        time(), time(),
-        '【插件间对接自动退款】下游用户ID:' . $userId . '，上游产品ID:' . $upstreamProductId,
-        $amount,
-        $invoiceId
-    ]);
-
-    $stmt = $pdo->prepare("
-        INSERT INTO `{$dbPrefix}credit`
-            (uid, create_time, description, amount, notes, balance)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ");
-    $stmt->execute([
-        $localUserId,
-        time(),
-        'Credit from Refund of Invoice ID ' . $invoiceId,
-        $amount,
-        '订单号：' . $hostInfo['orderid'] . '，首付金额：' . ($hostInfo['firstpaymentamount'] ?? '0') . '元，【插件间对接自动退款】下游用户ID:' . $userId . '【退款金额：' . $amount . ' 元】',
-        $newCredit
-    ]);
-
-    $stmt = $pdo->prepare("UPDATE `{$dbPrefix}invoices` SET status = 'Refunded' WHERE id = ?");
-    $stmt->execute([$invoiceId]);
-
-    $updatetime = time();
-    $stmt = $pdo->prepare("UPDATE `{$dbPrefix}host` SET nextduedate = ? WHERE id = ?");
-    $stmt->execute([$updatetime, $localHostId]);
-
-    $oldNotes = $hostInfo['notes'] ?? '';
-    $newNotes = $oldNotes . "\n【插件间对接自动退款】下游用户ID:" . $userId . "\n原到期：" . date("Y-m-d H:i:s", $hostInfo['nextduedate']) . "\n更新到期：" . date("Y-m-d H:i:s", $updatetime);
-    $stmt = $pdo->prepare("UPDATE `{$dbPrefix}host` SET notes = ? WHERE id = ?");
-    $stmt->execute([$newNotes, $localHostId]);
-
-    $stmt = $pdo->prepare("
-        INSERT INTO `{$dbPrefix}activity_log`
-            (create_time, description, user, uid, ipaddr, type, activeid, usertype, port, type_data_id)
-        VALUES (?, ?, 'System', ?, ?, '6', 0, 'System', '', 0)
-    ");
-    $stmt->execute([
-        time(),
-        '【插件间对接自动退款】下游用户ID:' . $userId . '，Host ID:' . $localHostId . '，原到期：' . date("Y-m-d H:i:s", $hostInfo['nextduedate']) . '，更新到期：' . date("Y-m-d H:i:s", $updatetime),
-        $localUserId,
-        $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0'
-    ]);
-}
-
 exit(json_encode(['code' => 200, 'msg' => '退款申请提交成功' . ($upstreamRefundResult ? '（' . $upstreamRefundResult['msg'] . '）' : '')]));
 
+// ── 上游API调用函数 ───────────────────────────────────────────────
+
+/**
+ * 调用上游API工单退款
+ */
 function callUpstreamApiRefund($config, $apiKey, $upstreamProductId, $amount, $reason)
 {
     $hostname = rtrim($config['hostname'], '/');
     
+    // 1. 登录获取JWT
     $loginUrl = $hostname . '/v1/login_api';
     $loginData = json_encode(['account' => $config['username'], 'password' => $apiKey]);
     
@@ -331,6 +260,7 @@ function callUpstreamApiRefund($config, $apiKey, $upstreamProductId, $amount, $r
         return ['success' => false, 'msg' => '上游登录失败:' . ($loginResult['msg'] ?? '未知错误')];
     }
     
+    // 2. 提交工单
     $ticketUrl = $hostname . '/submitticket?step=2&dptid=' . ($config['ticket_department_id'] ?: 2);
     $boundary = '----WebKitFormBoundary' . uniqid();
     
@@ -385,6 +315,9 @@ function callUpstreamApiRefund($config, $apiKey, $upstreamProductId, $amount, $r
     return ['success' => false, 'msg' => '上游工单提交失败(HTTP:' . $httpCode . ')'];
 }
 
+/**
+ * 调用上游插件间对接退款
+ */
 function callUpstreamPluginRefund($config, $apiKey, $upstreamProductId, $amount, $reason, $username)
 {
     $hostname = rtrim($config['hostname'], '/');
@@ -392,7 +325,7 @@ function callUpstreamPluginRefund($config, $apiKey, $upstreamProductId, $amount,
     
     $requestData = [
         'api_key' => $apiKey,
-        'user_id' => 0,
+        'user_id' => 0, // 上游使用API KEY关联的用户
         'username' => $username,
         'upstream_product_id' => $upstreamProductId,
         'amount' => $amount,
@@ -428,12 +361,19 @@ function callUpstreamPluginRefund($config, $apiKey, $upstreamProductId, $amount,
     }
 }
 
+/**
+ * 解密API密钥（独立实现，不依赖框架）
+ * @param string $data 加密的数据
+ * @param string $dbPassword 数据库密码作为密钥
+ * @return string 解密后的数据
+ */
 function decryptApiKey($data, $dbPassword)
 {
     if (empty($data)) {
         return '';
     }
     
+    // 使用数据库密码作为密钥（与EncryptUtil一致）
     $key = hash('sha256', $dbPassword, true);
     
     $decoded = base64_decode($data);
@@ -441,9 +381,11 @@ function decryptApiKey($data, $dbPassword)
         return '';
     }
     
+    // 提取 IV 和加密数据
     $iv = substr($decoded, 0, 16);
     $encrypted = substr($decoded, 16);
     
+    // 解密
     $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
     
     if ($decrypted === false) {

@@ -92,9 +92,10 @@ class IndexController extends \app\home\controller\PluginHomeBaseController
         $firstpaymentamount = \Think\Db::name("host")->where("id", $id)->value("firstpaymentamount");
         $resultlist   = \Think\Db::name("product_refund_list")->where("hostid", $id)->find();
 
+        if (!$product)                                            return json(["code" => 400, "msg" => "当前产品不支持退款"]);
+
         $isPending = ($productsid["domainstatus"] == "Pending");
 
-        if (!$product)                                            return json(["code" => 400, "msg" => "当前产品不支持退款"]);
         if ($invoices["status"] === "Unpaid")                    return json(["code" => 400, "msg" => "当前产品订单未支付状态，不支持申请"]);
         if ($resultlist && $resultlist["status"] != 0 && $resultlist["status"] != 4) return json(["code" => 400, "msg" => "当前订单已经申请过退款，请勿重复再次申请"]);
         if (!$isPending && $productsid["nextduedate"] < time())  return json(["code" => 400, "msg" => "当前产品已到期，不支持申请退款"]);
@@ -161,7 +162,14 @@ class IndexController extends \app\home\controller\PluginHomeBaseController
             ]);
 
             if ($apiAuditType == 2) {
-                $this->doAutoRefund($user_id, $clients, $id, $orderidsid, $refundamount, "【API自动退款】上游产品ID：" . $dcimid, $productsid);
+                // 校验账单支付状态
+                if ($invoices["status"] !== "Paid") {
+                    return json(["code" => 400, "msg" => "当前产品订单未支付，不支持自动退款"]);
+                }
+                $autoResult = $this->doAutoRefund($user_id, $clients, $id, $orderidsid, $refundamount, "【API自动退款】上游产品ID：" . $dcimid);
+                if (!$autoResult['success']) {
+                    return json(["code" => 400, "msg" => "自动退款失败：" . $autoResult['msg']]);
+                }
                 return json(["code" => 200, "msg" => "申请成功，工单已提交且已自动退款到余额。"]);
             }
             return json(["code" => 200, "msg" => "申请成功，等待管理员审核。"]);
@@ -211,16 +219,22 @@ class IndexController extends \app\home\controller\PluginHomeBaseController
             ]);
 
             if ($apiAuditType == 2) {
-                $this->doAutoRefund($user_id, $clients, $id, $orderidsid, $refundamount, "【插件间对接自动退款】上游产品ID：" . $dcimid, $productsid);
+                // 校验账单支付状态
+                if ($invoices["status"] !== "Paid") {
+                    return json(["code" => 400, "msg" => "当前产品订单未支付，不支持自动退款"]);
+                }
+                $autoResult = $this->doAutoRefund($user_id, $clients, $id, $orderidsid, $refundamount, "【插件间对接自动退款】上游产品ID：" . $dcimid);
+                if (!$autoResult['success']) {
+                    return json(["code" => 400, "msg" => "自动退款失败：" . $autoResult['msg']]);
+                }
                 return json(["code" => 200, "msg" => "申请成功，已向上游提交且已自动退款到余额。"]);
             }
             return json(["code" => 200, "msg" => "申请成功，已向上游提交退款申请，等待管理员审核。"]);
         }
 
         // =====================================================================
-        // TYPE=1/2: 人工审核 / 自动退款（原逻辑不变，按 request+rules 分支处理）
+        // TYPE=1/2: 人工审核 / 自动退款
         // =====================================================================
-        // 以下保留原有人工审核和自动退款完整逻辑
         if ($type == 1 || $type == 2) {
             // 时间窗口检查
             $withinHours     = $product["within"];
@@ -231,7 +245,6 @@ class IndexController extends \app\home\controller\PluginHomeBaseController
             $newTimestamp    = $productsid["regdate"] + $withinInSeconds;
 
             if ($request == 1 || $request == 2) {
-                // 首次购买限制检查
                 $setting = \Think\Db::name("product_refund_setting")->where("id", 1)->find();
                 if ($clientsGroup == "0" || $setting["agent"] != 1) {
                     $dupCheck = \Think\Db::name("product_refund_list")
@@ -247,36 +260,60 @@ class IndexController extends \app\home\controller\PluginHomeBaseController
             }
 
             if ($request == 3) {
-                // 指定时间内检查
                 if ($newTimestamp < $currentTimestamp) {
                     return json(["code" => 400, "msg" => "当前产品支持开通后" . $product["within"] . "小时内退款，当前已经超过指定时间，不能执行操作。"]);
                 }
+            }
+
+            // 校验账单支付状态（修复漏洞：未支付不能退款）
+            $invoiceId = intval($orderidsid["invoiceid"]);
+            if ($invoices["status"] !== "Paid") {
+                return json(["code" => 400, "msg" => "当前产品订单未支付，不支持退款"]);
             }
 
             $refundamount = $this->calcRefund($productsid, $rules);
             if ($refundamount <= 0) return json(["code" => 400, "msg" => "退款金额不能小于0"]);
 
             if ($type == 2) {
-                // ---- 自动退款 ----
-                $newcredit = $clients["credit"] + $refundamount;
-                $usagetime = $currentTimestamp - $productsid["regdate"];
-                $h = floor($usagetime / 3600); $m = floor($usagetime % 3600 / 60); $s = $usagetime % 60;
-                $timeFormat = sprintf("%02d:%02d:%02d", $h, $m, $s);
-                $ruleLabel  = ($rules == 1) ? "按时长" : (($rules == 2) ? "按月" : "全额");
-                $reqLabel   = ($request == 1) ? "产品首次" : (($request == 2) ? "同类产品首次" : $product["within"] . "小时内");
-                \Think\Db::name("accounts")->insert(["uid" => $user_id, "currency" => "CNY", "gateway" => "退款至余额【主机ID：" . $id . " 】", "create_time" => time(), "pay_time" => time(), "description" => "【" . $reqLabel . "自动" . $ruleLabel . "退款】订单号：" . $orderid . ", 主机ID：" . $id . ", 使用时长：" . $timeFormat, "amount_out" => $refundamount, "rate" => "1.00000", "invoice_id" => $orderidsid["invoiceid"]]);
-                \Think\Db::name("credit")->insert(["uid" => $user_id, "create_time" => time(), "description" => "Credit from Refund of Invoice ID " . $orderidsid["invoiceid"], "amount" => $refundamount, "notes" => "订单号：" . $orderidsid["invoiceid"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，" . $reqLabel . "自动" . $ruleLabel . "退款【退款金额：" . $refundamount . " 元】，使用时长：" . $timeFormat, "balance" => $newcredit]);
-                \Think\Db::name("clients")->where("id", $user_id)->update(["credit" => $newcredit]);
-                \Think\Db::name("invoices")->where("id", $orderidsid["invoiceid"])->update(["status" => "Refunded"]);
-                \Think\Db::name("activity_log")->insert(["create_time" => time(), "description" => "账单退款 - User ID:" . $user_id . " - Invoice ID:" . $orderidsid["invoiceid"] . " - 退款金额: " . $refundamount . " 元，来源：" . $reqLabel . "自动" . $ruleLabel . "退款", "user" => "System", "uid" => $user_id, "ipaddr" => "0.0.0.0", "type" => "6", "activeid" => 0, "usertype" => "System", "port" => "", "type_data_id" => $orderidsid["invoiceid"]]);
-                \Think\Db::name("product_refund_list")->insert(["user_id" => $user_id, "username" => $clients["username"], "productid" => $productid, "productname" => $productstype["name"], "orderid" => $orderid, "producttype" => $productstype["type"], "hostid" => $id, "invoices" => $orderidsid["invoiceid"], "type" => $type, "request" => $request, "rules" => $rules, "amount" => $refundamount, "created_time" => time(), "reasonrefund" => $reasonrefund, "audittime" => time(), "adminid" => "System", "reviewed" => "System", "status" => "2", "reason" => "自动审核通过"]);
+                // ---- 自动退款（通过 RefundService 按系统逻辑退款）----
+                require_once __DIR__ . "/../../lib/RefundService.php";
+                $refundService = new \addons\auto_refund\lib\RefundService();
+
+                // 校验系统可退金额
+                $refundInfo = $refundService->getRefundable($invoiceId);
+                if (!$refundInfo['success']) {
+                    return json(["code" => 400, "msg" => $refundInfo['msg']]);
+                }
+                if ($refundamount > $refundInfo['can_refund']) {
+                    return json(["code" => 400, "msg" => "退款金额超过系统可退金额，请检查账单是否已支付或已被退款。"]);
+                }
+
+                $refundResult = $refundService->refund($invoiceId, $refundamount, $id, "System", 0);
+                if (!$refundResult['success']) {
+                    return json(["code" => 400, "msg" => $refundResult['msg']]);
+                }
+
                 $updatetime = time();
                 \Think\Db::name("host")->where("id", $id)->update(["nextduedate" => $updatetime]);
-                \Think\Db::name("activity_log")->insert(["create_time" => time(), "description" => "【自动退】用户申请退款 User ID:" . $user_id . "，Host ID:" . $id . "，原到期：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "，更新到期：" . date("Y-m-d H:i:s", $updatetime) . "，来源：" . $reqLabel . "自动" . $ruleLabel . "退款", "user" => "System", "uid" => $user_id, "ipaddr" => "0.0.0.0", "type" => "6", "activeid" => 0, "usertype" => "System", "port" => "", "type_data_id" => ""]);
+
+                $ruleLabel  = ($rules == 1) ? "按时长" : (($rules == 2) ? "按月" : "全额");
+                $reqLabel   = ($request == 1) ? "产品首次" : (($request == 2) ? "同类产品首次" : $product["within"] . "小时内");
+
                 $originalData = \Think\Db::name("host")->where("id", $id)->find();
-                \Think\Db::name("host")->where("id", $id)->update(["notes" => ($originalData["notes"] ?? "") . "\n自动" . $ruleLabel . "退款\n原到期：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n更新到期：" . date("Y-m-d H:i:s", $updatetime)]);
-                $this->sendNotifications($Switch, $this->buildNotifyMsg($Switch, $product, $productstype, $clients, $orderidsid, $id, $user_id, $orderid, $firstpaymentamount, $refundamount, $reasonrefund));
-                return json(["code" => 200, "msg" => "申请成功，系统审核中。"]);
+                \Think\Db::name("host")->where("id", $id)->update(["notes" => ($originalData["notes"] ?? "") . "\n自动" . $ruleLabel . "退款\n原到期：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n更新到期：" . date("Y-m-d H:i:s", $updatetime) . "\n退款金额：" . $refundResult['refunded_amount'] . "元"]);
+
+                \Think\Db::name("product_refund_list")->insert([
+                    "user_id" => $user_id, "username" => $clients["username"], "productid" => $productid,
+                    "productname" => $productstype["name"], "orderid" => $orderid, "producttype" => $productstype["type"],
+                    "hostid" => $id, "invoices" => $orderidsid["invoiceid"], "type" => $type,
+                    "request" => $request, "rules" => $rules, "amount" => $refundResult['refunded_amount'],
+                    "created_time" => time(), "reasonrefund" => $reasonrefund,
+                    "audittime" => time(), "adminid" => "System", "reviewed" => "System",
+                    "status" => "2", "reason" => "自动审核通过（系统可退：" . $refundResult['refunded_amount'] . "元）"
+                ]);
+
+                $this->sendNotifications($Switch, $this->buildNotifyMsg($Switch, $product, $productstype, $clients, $orderidsid, $id, $user_id, $orderid, $firstpaymentamount, $refundResult['refunded_amount'], $reasonrefund));
+                return json(["code" => 200, "msg" => "申请成功，" . $refundResult['msg']]);
             } else {
                 // ---- 人工审核 ----
                 \Think\Db::name("product_refund_list")->insert(["user_id" => $user_id, "username" => $clients["username"], "productid" => $productid, "productname" => $productstype["name"], "orderid" => $orderid, "producttype" => $productstype["type"], "hostid" => $id, "invoices" => $orderidsid["invoiceid"], "type" => $type, "request" => $request, "rules" => $rules, "amount" => $refundamount, "created_time" => time(), "reasonrefund" => $reasonrefund, "status" => "1"]);
@@ -333,48 +370,13 @@ class IndexController extends \app\home\controller\PluginHomeBaseController
         }
     }
 
-    /** 执行自动退款入账操作（credit/accounts/invoice/host到期/日志） */
-    private function doAutoRefund($user_id, $clients, $id, $orderidsid, $refundamount, $description, $productsid)
+    /** 执行自动退款入账操作（通过 RefundService 按系统逻辑） */
+    private function doAutoRefund($user_id, $clients, $id, $orderidsid, $refundamount, $description)
     {
-        $newcredit = $clients["credit"] + $refundamount;
-        \Think\Db::name("accounts")->insert([
-            "uid" => $user_id, "currency" => "CNY",
-            "gateway" => "退款至余额【主机ID：" . $id . " 】",
-            "create_time" => time(), "pay_time" => time(),
-            "description" => $description,
-            "amount_out" => $refundamount, "rate" => "1.00000",
-            "invoice_id" => $orderidsid["invoiceid"]
-        ]);
-        \Think\Db::name("credit")->insert([
-            "uid" => $user_id, "create_time" => time(),
-            "description" => "Credit from Refund of Invoice ID " . $orderidsid["invoiceid"],
-            "amount" => $refundamount,
-            "notes" => "订单号：" . $orderidsid["invoiceid"] . "，首付金额：" . $productsid["firstpaymentamount"] . "元，" . $description . "【退款金额：" . $refundamount . " 元】",
-            "balance" => $newcredit
-        ]);
-        \Think\Db::name("clients")->where("id", $user_id)->update(["credit" => $newcredit]);
-        \Think\Db::name("invoices")->where("id", $orderidsid["invoiceid"])->update(["status" => "Refunded"]);
-
-        $updatetime = time();
-        \Think\Db::name("host")->where("id", $id)->update(["nextduedate" => $updatetime]);
-        \Think\Db::name("activity_log")->insert([
-            "create_time" => time(),
-            "description" => "账单退款 - User ID:" . $user_id . " - Invoice ID:" . $orderidsid["invoiceid"] . " - 退款金额: " . $refundamount . " 元，来源：" . $description,
-            "user" => "System", "uid" => $user_id, "ipaddr" => "0.0.0.0",
-            "type" => "6", "activeid" => 0, "usertype" => "System", "port" => "",
-            "type_data_id" => $orderidsid["invoiceid"]
-        ]);
-        \Think\Db::name("activity_log")->insert([
-            "create_time" => time(),
-            "description" => "【自动退】" . $description . " User ID:" . $user_id . "，Host ID:" . $id . "，原到期：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "，更新到期：" . date("Y-m-d H:i:s", $updatetime),
-            "user" => "System", "uid" => $user_id, "ipaddr" => "0.0.0.0",
-            "type" => "6", "activeid" => 0, "usertype" => "System", "port" => "",
-            "type_data_id" => ""
-        ]);
-        $originalData = \Think\Db::name("host")->where("id", $id)->find();
-        \Think\Db::name("host")->where("id", $id)->update([
-            "notes" => ($originalData["notes"] ?? "") . "\n" . $description . "\n原到期：" . date("Y-m-d H:i:s", $productsid["nextduedate"]) . "\n更新到期：" . date("Y-m-d H:i:s", $updatetime)
-        ]);
+        $invoiceId = intval($orderidsid["invoiceid"]);
+        require_once __DIR__ . "/../../lib/RefundService.php";
+        $refundService = new \addons\auto_refund\lib\RefundService();
+        return $refundService->refund($invoiceId, $refundamount, $id, "System", 0);
     }
 
     /** 构建通知消息文本 */
